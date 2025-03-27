@@ -1,10 +1,13 @@
 import sys
 import sqlite3
+import os
 from datetime import datetime
-from PyQt6.QtWidgets import QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QPushButton, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QListWidget
+from PyQt6.QtWidgets import QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QPushButton, \
+    QLabel, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QListWidget
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtCore import Qt, QRectF, QTimer
 from PyQt6.QtGui import QPixmap, QPainter, QFont
+
 
 class TimeIsMoney(QMainWindow):
     def __init__(self):
@@ -41,6 +44,11 @@ class TimeIsMoney(QMainWindow):
         self.remove_participant_button = QPushButton("Remove Participant", self)
         self.remove_participant_button.clicked.connect(self.remove_participant)
         self.sidebar_layout.addWidget(self.remove_participant_button)
+
+        # Add All Employees button
+        self.add_all_button = QPushButton("Add All Employees", self)
+        self.add_all_button.clicked.connect(self.add_all_employees)
+        self.sidebar_layout.addWidget(self.add_all_button)
 
         # Participants list
         self.participants_list = QListWidget(self)
@@ -118,18 +126,20 @@ class TimeIsMoney(QMainWindow):
         self.timer.timeout.connect(self.update_timer)
         self.start_time = None
         self.elapsed_ms = 0
-        self.total_hourly_rate = 0.0  # Sum of participants' wages
+        self.total_hourly_rate = 0.0
 
     def load_employees(self):
-        """Load employee names into the dropdown from the database (no wages)."""
+        """Load employee names into the dropdown from the database (no wages shown)."""
         employees = self.get_employees()
-        for name, wage in employees:
+        for employee in employees:
+            name = employee[0]  # First column: name
             self.employee_combo.addItem(name, name)
 
     def add_participant(self):
         """Add selected employee to the participants list and update total hourly rate."""
         selected_name = self.employee_combo.currentData()
-        if selected_name and selected_name not in [self.participants_list.item(i).text() for i in range(self.participants_list.count())]:
+        if selected_name and selected_name not in [self.participants_list.item(i).text() for i in
+                                                   range(self.participants_list.count())]:
             self.participants_list.addItem(selected_name)
             self.cursor.execute("SELECT working_wage FROM Employees WHERE name = ?", (selected_name,))
             wage = self.cursor.fetchone()[0]
@@ -147,6 +157,22 @@ class TimeIsMoney(QMainWindow):
         wage = self.cursor.fetchone()[0]
         self.total_hourly_rate -= wage
         print(f"EASTER EGG: {selected_name} has left the money-making party!")
+        if self.timer.isActive():
+            cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
+            self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
+
+    def add_all_employees(self):
+        """Add all employees from the database to the participants list."""
+        employees = self.get_employees()
+        current_participants = [self.participants_list.item(i).text() for i in range(self.participants_list.count())]
+
+        for employee in employees:
+            name, wage = employee[0], employee[1]  # name and working_wage
+            if name not in current_participants:
+                self.participants_list.addItem(name)
+                self.total_hourly_rate += wage
+                print(f"EASTER EGG: {name} joined the company-wide cash bash!")
+
         if self.timer.isActive():
             cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
             self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
@@ -181,21 +207,23 @@ class TimeIsMoney(QMainWindow):
             duration_str = self.format_time(self.elapsed_ms)
             self.duration_label.setText(f"Meeting Duration: {duration_str}")
             cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
-            self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
+            self.cost_label.setText(f"Cost Estimate: ${cost:.2f}")
             print(f"EASTER EGG: Meeting over! Time banked: {duration_str}. Cash it in!")
             self.save_meeting_data(self.participants_list, duration_str, cost)
 
     def save_meeting_data(self, participants, duration, cost):
-        """Save meeting data to a text file with a timestamped name."""
+        """Save meeting data to a text file in the session logs folder with a timestamped name."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"meeting_log_{timestamp}.txt"
+        log_dir = os.path.join("G:\\expo\\Software\\TimeIsMoney\\TimeIsMoney", "session logs")
+        os.makedirs(log_dir, exist_ok=True)
+        filename = os.path.join(log_dir, f"meeting_log_{timestamp}.txt")
         participants_list = [self.participants_list.item(i).text() for i in range(self.participants_list.count())]
         with open(filename, "w") as f:
             f.write("Meeting Summary\n")
             f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Participants: {', '.join(participants_list)}\n")
             f.write(f"Duration: {duration}\n")
-            f.write(f"Total Cost: ${cost:.2f}\n")
+            f.write(f"Cost Estimate before Benefits: ${cost:.2f}\n")
         print(f"EASTER EGG: Meeting data saved to {filename}! Cash it in later!")
 
     def update_timer(self):
@@ -217,7 +245,9 @@ class TimeIsMoney(QMainWindow):
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{ms:03d}"
 
     def get_employees(self):
-        self.cursor.execute("SELECT name, working_wage FROM Employees")
+        """Fetch all employees from the database."""
+        self.cursor.execute(
+            "SELECT name, working_wage, department, cost_center, worksite_assignment, has_benefits FROM Employees")
         return self.cursor.fetchall()
 
     def mousePressEvent(self, event):
@@ -236,14 +266,14 @@ class TimeIsMoney(QMainWindow):
         self.conn.close()
         super().closeEvent(event)
 
+
 def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     window = TimeIsMoney()
     window.show()
-    employees = window.get_employees()
-    print("Employees in database:", employees)
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
