@@ -1,9 +1,10 @@
 import sys
 import sqlite3
+from datetime import datetime
 from PyQt6.QtWidgets import QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QPushButton, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QListWidget
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtCore import Qt, QRectF, QTimer
-from PyQt6.QtGui import QPixmap, QPainter
+from PyQt6.QtGui import QPixmap, QPainter, QFont
 
 class TimeIsMoney(QMainWindow):
     def __init__(self):
@@ -36,6 +37,11 @@ class TimeIsMoney(QMainWindow):
         self.add_participant_button.clicked.connect(self.add_participant)
         self.sidebar_layout.addWidget(self.add_participant_button)
 
+        # Remove Participant button
+        self.remove_participant_button = QPushButton("Remove Participant", self)
+        self.remove_participant_button.clicked.connect(self.remove_participant)
+        self.sidebar_layout.addWidget(self.remove_participant_button)
+
         # Participants list
         self.participants_list = QListWidget(self)
         self.sidebar_layout.addWidget(self.participants_list)
@@ -60,6 +66,12 @@ class TimeIsMoney(QMainWindow):
         self.duration_label = QLabel("", self)
         self.duration_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sidebar_layout.addWidget(self.duration_label)
+
+        # Meeting cost label
+        self.cost_label = QLabel("Meeting Cost: $0.00", self)
+        self.cost_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cost_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        self.sidebar_layout.addWidget(self.cost_label)
 
         # Add stretch to push controls to top
         self.sidebar_layout.addStretch()
@@ -106,41 +118,49 @@ class TimeIsMoney(QMainWindow):
         self.timer.timeout.connect(self.update_timer)
         self.start_time = None
         self.elapsed_ms = 0
+        self.total_hourly_rate = 0.0  # Sum of participants' wages
 
     def load_employees(self):
         """Load employee names into the dropdown from the database (no wages)."""
         employees = self.get_employees()
         for name, wage in employees:
-            self.employee_combo.addItem(name, name)  # Show only name, store name as data
+            self.employee_combo.addItem(name, name)
 
     def add_participant(self):
-        """Add selected employee to the participants list (name only)."""
-        selected_name = self.employee_combo.currentData()  # Get the name (data)
+        """Add selected employee to the participants list and update total hourly rate."""
+        selected_name = self.employee_combo.currentData()
         if selected_name and selected_name not in [self.participants_list.item(i).text() for i in range(self.participants_list.count())]:
-            self.participants_list.addItem(selected_name)  # Add just the name
-            # Fetch wage for Easter egg
+            self.participants_list.addItem(selected_name)
             self.cursor.execute("SELECT working_wage FROM Employees WHERE name = ?", (selected_name,))
             wage = self.cursor.fetchone()[0]
+            self.total_hourly_rate += wage
             print(f"EASTER EGG: {selected_name} joined the money-making party!")
 
+    def remove_participant(self):
+        """Remove the selected participant from the list and adjust the total hourly rate."""
+        selected_items = self.participants_list.selectedItems()
+        if not selected_items:
+            return
+        selected_name = selected_items[0].text()
+        self.participants_list.takeItem(self.participants_list.row(selected_items[0]))
+        self.cursor.execute("SELECT working_wage FROM Employees WHERE name = ?", (selected_name,))
+        wage = self.cursor.fetchone()[0]
+        self.total_hourly_rate -= wage
+        print(f"EASTER EGG: {selected_name} has left the money-making party!")
+        if self.timer.isActive():
+            cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
+            self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
+
     def showEvent(self, event):
-        """Scale the SVG to fit the window after it's shown."""
         super().showEvent(event)
         self.fit_svg_to_window()
 
     def fit_svg_to_window(self):
-        """Scale and center the SVG to fit the view."""
         if self.svg_renderer.isValid():
             svg_size = self.svg_renderer.defaultSize()
-            self.view.fitInView(
-                QRectF(0, 0, svg_size.width(), svg_size.height()),
-                Qt.AspectRatioMode.KeepAspectRatio
-            )
-            print(f"Viewport size: {self.view.viewport().size()}")
-            print(f"Scene rect: {self.scene.sceneRect()}")
+            self.view.fitInView(QRectF(0, 0, svg_size.width(), svg_size.height()), Qt.AspectRatioMode.KeepAspectRatio)
 
     def start_meeting(self):
-        """Start the timer when the button is clicked."""
         if not self.timer.isActive():
             import time
             self.start_time = int(time.time() * 1000)
@@ -149,10 +169,10 @@ class TimeIsMoney(QMainWindow):
             self.start_button.setEnabled(False)
             self.end_button.setEnabled(True)
             self.duration_label.setText("")
+            self.cost_label.setText("Meeting Cost: $0.00")
             print("EASTER EGG: Meeting initiated! Time to make some money, honey!")
 
     def end_meeting(self):
-        """Stop the timer and display meeting duration."""
         if self.timer.isActive():
             self.timer.stop()
             self.end_button.setEnabled(False)
@@ -160,20 +180,36 @@ class TimeIsMoney(QMainWindow):
             self.start_button.setText("Meeting Start")
             duration_str = self.format_time(self.elapsed_ms)
             self.duration_label.setText(f"Meeting Duration: {duration_str}")
+            cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
+            self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
             print(f"EASTER EGG: Meeting over! Time banked: {duration_str}. Cash it in!")
+            self.save_meeting_data(self.participants_list, duration_str, cost)
+
+    def save_meeting_data(self, participants, duration, cost):
+        """Save meeting data to a text file with a timestamped name."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"meeting_log_{timestamp}.txt"
+        participants_list = [self.participants_list.item(i).text() for i in range(self.participants_list.count())]
+        with open(filename, "w") as f:
+            f.write("Meeting Summary\n")
+            f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Participants: {', '.join(participants_list)}\n")
+            f.write(f"Duration: {duration}\n")
+            f.write(f"Total Cost: ${cost:.2f}\n")
+        print(f"EASTER EGG: Meeting data saved to {filename}! Cash it in later!")
 
     def update_timer(self):
-        """Update the timer label with precise time."""
         import time
         current_time = int(time.time() * 1000)
         self.elapsed_ms = current_time - self.start_time
         time_str = self.format_time(self.elapsed_ms)
         self.timer_label.setText(f"Time Elapsed: {time_str}")
+        cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
+        self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
         if self.elapsed_ms % 10000 < 10:
             print("EASTER EGG: Tick-tock! Time’s money, and you’re racking it up!")
 
     def format_time(self, milliseconds):
-        """Convert milliseconds to HH:MM:SS:ms format."""
         hours = milliseconds // (1000 * 60 * 60)
         minutes = (milliseconds // (1000 * 60)) % 60
         seconds = (milliseconds // 1000) % 60
@@ -181,27 +217,22 @@ class TimeIsMoney(QMainWindow):
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{ms:03d}"
 
     def get_employees(self):
-        """Fetch all employees from the database."""
         self.cursor.execute("SELECT name, working_wage FROM Employees")
         return self.cursor.fetchall()
 
     def mousePressEvent(self, event):
-        """Handle mouse click events."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.handle_left_click(event.pos())
         elif event.button() == Qt.MouseButton.RightButton:
             self.handle_right_click(event.pos())
 
     def handle_left_click(self, pos):
-        """Placeholder for left-click functionality."""
         print(f"Left click at {pos}")
 
     def handle_right_click(self, pos):
-        """Placeholder for right-click functionality."""
         print(f"Right click at {pos}")
 
     def closeEvent(self, event):
-        """Close the database connection when the app closes."""
         self.conn.close()
         super().closeEvent(event)
 
