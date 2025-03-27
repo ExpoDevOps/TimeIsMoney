@@ -3,11 +3,10 @@ import sqlite3
 import os
 from datetime import datetime
 from PyQt6.QtWidgets import QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QPushButton, \
-    QLabel, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QListWidget
+    QLabel, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QListWidget, QMessageBox
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtCore import Qt, QRectF, QTimer
 from PyQt6.QtGui import QPixmap, QPainter, QFont
-
 
 class TimeIsMoney(QMainWindow):
     def __init__(self):
@@ -35,19 +34,22 @@ class TimeIsMoney(QMainWindow):
         self.load_employees()
         self.sidebar_layout.addWidget(self.employee_combo)
 
-        # Add Participant button
+        # Add Participant button (Red)
         self.add_participant_button = QPushButton("Add Participant", self)
         self.add_participant_button.clicked.connect(self.add_participant)
+        self.add_participant_button.setStyleSheet("background-color: red; color: white;")
         self.sidebar_layout.addWidget(self.add_participant_button)
 
-        # Remove Participant button
+        # Remove Participant button (Green)
         self.remove_participant_button = QPushButton("Remove Participant", self)
         self.remove_participant_button.clicked.connect(self.remove_participant)
+        self.remove_participant_button.setStyleSheet("background-color: green; color: white;")
         self.sidebar_layout.addWidget(self.remove_participant_button)
 
-        # Add All Employees button
+        # Add All Employees button (Purple)
         self.add_all_button = QPushButton("Add All Employees", self)
         self.add_all_button.clicked.connect(self.add_all_employees)
+        self.add_all_button.setStyleSheet("background-color: purple; color: white;")
         self.sidebar_layout.addWidget(self.add_all_button)
 
         # Participants list
@@ -59,16 +61,24 @@ class TimeIsMoney(QMainWindow):
         self.timer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sidebar_layout.addWidget(self.timer_label)
 
-        # Meeting Start button
+        # Meeting Start button (Blue when active, Grey when inactive)
         self.start_button = QPushButton("Meeting Start", self)
         self.start_button.clicked.connect(self.start_meeting)
+        self.start_button.setStyleSheet("background-color: blue; color: white;")
         self.sidebar_layout.addWidget(self.start_button)
 
-        # End Meeting button
+        # End Meeting button (Grey initially, Blue when active)
         self.end_button = QPushButton("End Meeting", self)
         self.end_button.clicked.connect(self.end_meeting)
         self.end_button.setEnabled(False)
+        self.end_button.setStyleSheet("background-color: grey; color: white;")
         self.sidebar_layout.addWidget(self.end_button)
+
+        # Reset button
+        self.reset_button = QPushButton("Reset", self)
+        self.reset_button.clicked.connect(self.reset_meeting)
+        self.reset_button.setStyleSheet("background-color: orange; color: white;")  # Orange for visibility, can change if you prefer
+        self.sidebar_layout.addWidget(self.reset_button)
 
         # Meeting duration label
         self.duration_label = QLabel("", self)
@@ -127,6 +137,8 @@ class TimeIsMoney(QMainWindow):
         self.start_time = None
         self.elapsed_ms = 0
         self.total_hourly_rate = 0.0
+        self.participant_events = []
+        self.meeting_start_str = ""
 
     def load_employees(self):
         """Load employee names into the dropdown from the database (no wages shown)."""
@@ -145,6 +157,13 @@ class TimeIsMoney(QMainWindow):
             wage = self.cursor.fetchone()[0]
             self.total_hourly_rate += wage
             print(f"EASTER EGG: {selected_name} joined the money-making party!")
+            if self.timer.isActive():
+                event_time = datetime.fromtimestamp((self.start_time + self.elapsed_ms) / 1000).strftime(
+                    '%I:%M%p').lower()
+                minutes_elapsed = self.elapsed_ms // (1000 * 60)
+                self.participant_events.append(
+                    f"{selected_name} joined @ {event_time}; {minutes_elapsed} minutes after the meeting start ({self.meeting_start_str})"
+                )
 
     def remove_participant(self):
         """Remove the selected participant from the list and adjust the total hourly rate."""
@@ -158,6 +177,11 @@ class TimeIsMoney(QMainWindow):
         self.total_hourly_rate -= wage
         print(f"EASTER EGG: {selected_name} has left the money-making party!")
         if self.timer.isActive():
+            event_time = datetime.fromtimestamp((self.start_time + self.elapsed_ms) / 1000).strftime('%I:%M%p').lower()
+            minutes_elapsed = self.elapsed_ms // (1000 * 60)
+            self.participant_events.append(
+                f"{selected_name} left @ {event_time}; {minutes_elapsed} minutes after the meeting start ({self.meeting_start_str})"
+            )
             cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
             self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
 
@@ -172,6 +196,13 @@ class TimeIsMoney(QMainWindow):
                 self.participants_list.addItem(name)
                 self.total_hourly_rate += wage
                 print(f"EASTER EGG: {name} joined the company-wide cash bash!")
+                if self.timer.isActive():
+                    event_time = datetime.fromtimestamp((self.start_time + self.elapsed_ms) / 1000).strftime(
+                        '%I:%M%p').lower()
+                    minutes_elapsed = self.elapsed_ms // (1000 * 60)
+                    self.participant_events.append(
+                        f"{name} joined @ {event_time}; {minutes_elapsed} minutes after the meeting start ({self.meeting_start_str})"
+                    )
 
         if self.timer.isActive():
             cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
@@ -187,44 +218,113 @@ class TimeIsMoney(QMainWindow):
             self.view.fitInView(QRectF(0, 0, svg_size.width(), svg_size.height()), Qt.AspectRatioMode.KeepAspectRatio)
 
     def start_meeting(self):
+        """Start the meeting timer only if there are participants."""
+        if self.participants_list.count() == 0:
+            QMessageBox.warning(self, "No Participants", "MEETINGS ARE FOR PEOPLE")
+            return
+
         if not self.timer.isActive():
             import time
             self.start_time = int(time.time() * 1000)
+            self.meeting_start_str = datetime.fromtimestamp(self.start_time / 1000).strftime('%I:%M%p').lower()
             self.timer.start(10)
             self.start_button.setText("Meeting Started")
             self.start_button.setEnabled(False)
+            self.start_button.setStyleSheet("background-color: grey; color: white;")
             self.end_button.setEnabled(True)
+            self.end_button.setStyleSheet("background-color: blue; color: white;")
             self.duration_label.setText("")
             self.cost_label.setText("Meeting Cost: $0.00")
+            self.participant_events = []
             print("EASTER EGG: Meeting initiated! Time to make some money, honey!")
 
     def end_meeting(self):
         if self.timer.isActive():
             self.timer.stop()
             self.end_button.setEnabled(False)
+            self.end_button.setStyleSheet("background-color: grey; color: white;")
             self.start_button.setEnabled(True)
+            self.start_button.setStyleSheet("background-color: blue; color: white;")
             self.start_button.setText("Meeting Start")
             duration_str = self.format_time(self.elapsed_ms)
             self.duration_label.setText(f"Meeting Duration: {duration_str}")
             cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
-            self.cost_label.setText(f"Cost Estimate: ${cost:.2f}")
+            self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
             print(f"EASTER EGG: Meeting over! Time banked: {duration_str}. Cash it in!")
             self.save_meeting_data(self.participants_list, duration_str, cost)
 
     def save_meeting_data(self, participants, duration, cost):
-        """Save meeting data to a text file in the session logs folder with a timestamped name."""
+        """Save meeting data to an HTML file with colored event swatches in the session logs folder."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir = os.path.join("G:\\expo\\Software\\TimeIsMoney\\TimeIsMoney", "session logs")
         os.makedirs(log_dir, exist_ok=True)
-        filename = os.path.join(log_dir, f"meeting_log_{timestamp}.txt")
+        filename = os.path.join(log_dir, f"meeting_log_{timestamp}.html")
         participants_list = [self.participants_list.item(i).text() for i in range(self.participants_list.count())]
+
+        # HTML content with basic styling
+        html_content = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Meeting Log</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                h1 { color: #333; }
+                .summary { margin-bottom: 20px; }
+                .event { margin: 5px 0; }
+                .swatch { display: inline-block; width: 15px; height: 15px; margin-right: 10px; vertical-align: middle; }
+                .join { background-color: red; }
+                .leave { background-color: green; }
+            </style>
+        </head>
+        <body>
+            <h1>Meeting Summary</h1>
+            <div class="summary">
+        """
+        html_content += f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>"
+        html_content += f"Participants (at end): {', '.join(participants_list)}<br>"
+        html_content += f"Duration: {duration}<br>"
+        html_content += f"Total Cost: ${cost:.2f}<br>"
+        html_content += "</div><h2>Participant Events</h2>"
+
+        if self.participant_events:
+            for event in self.participant_events:
+                if "joined" in event:
+                    swatch_class = "join"
+                elif "left" in event:
+                    swatch_class = "leave"
+                else:
+                    swatch_class = ""  # Default, no swatch
+                html_content += f'<div class="event"><span class="swatch {swatch_class}"></span>{event}</div>'
+        else:
+            html_content += '<div class="event">No participant changes during the meeting.</div>'
+
+        html_content += """
+        </body>
+        </html>
+        """
+
         with open(filename, "w") as f:
-            f.write("Meeting Summary\n")
-            f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Participants: {', '.join(participants_list)}\n")
-            f.write(f"Duration: {duration}\n")
-            f.write(f"Cost Estimate before Benefits: ${cost:.2f}\n")
-        print(f"EASTER EGG: Meeting data saved to {filename}! Cash it in later!")
+            f.write(html_content)
+        print(f"EASTER EGG: Meeting data saved to {filename}! Open in a browser to see the colors pop!")
+
+    def reset_meeting(self):
+        """Reset the meeting state to initial values."""
+        if self.timer.isActive():
+            self.timer.stop()
+        self.participants_list.clear()
+        self.total_hourly_rate = 0.0
+        self.elapsed_ms = 0
+        self.participant_events = []
+        self.timer_label.setText("Time Elapsed: 00:00:00:000")
+        self.duration_label.setText("")
+        self.cost_label.setText("Meeting Cost: $0.00")
+        self.start_button.setText("Meeting Start")
+        self.start_button.setEnabled(True)
+        self.start_button.setStyleSheet("background-color: blue; color: white;")
+        self.end_button.setEnabled(False)
+        self.end_button.setStyleSheet("background-color: grey; color: white;")
+        print("EASTER EGG: Resetting the money clock—cha-ching!")
 
     def update_timer(self):
         import time
