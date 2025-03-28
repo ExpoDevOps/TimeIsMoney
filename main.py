@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QGraphicsView, QGraphicsS
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtCore import Qt, QRectF, QTimer
 from PyQt6.QtGui import QPixmap, QPainter, QFont, QAction
+import xml.etree.ElementTree as ET
 
 
 class TimeIsMoney(QMainWindow):
@@ -125,7 +126,7 @@ class TimeIsMoney(QMainWindow):
         # Reset button (top right in top_layout)
         self.reset_button = QPushButton("Reset Meeting", self)
         self.reset_button.clicked.connect(self.reset_meeting)
-        self.reset_button.setStyleSheet("background-color: orange; color: black;")  # Black text
+        self.reset_button.setStyleSheet("background-color: orange; color: black;")
         self.top_layout.addWidget(self.reset_button, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
 
         # Add top layout to main layout
@@ -168,10 +169,12 @@ class TimeIsMoney(QMainWindow):
         self.timer.timeout.connect(self.update_timer)
         self.start_time = None
         self.elapsed_ms = 0
-        self.total_hourly_rate = 0.0
+        self.total_hourly_rate = 0.0  # Current hourly rate for active participants
+        self.incurred_cost = 0.0  # Accumulated cost from past participation
         self.participant_events = []
         self.meeting_start_str = ""
         self.meeting_notes = []
+        self.participant_times = {}  # Tracks join times for cost calculation
 
         # Store employee data for menu and search
         self.employee_data = self.get_employees()
@@ -219,6 +222,7 @@ class TimeIsMoney(QMainWindow):
                 self.participant_events.append(
                     f"{name} joined @ {event_time}; {minutes_elapsed} minutes after the meeting start ({self.meeting_start_str})"
                 )
+                self.participant_times[name] = self.elapsed_ms  # Record join time
 
     def update_search_results(self, text):
         self.search_results.clear()
@@ -244,18 +248,34 @@ class TimeIsMoney(QMainWindow):
                 self.participant_events.append(
                     f"{name} joined @ {event_time}; {minutes_elapsed} minutes after the meeting start ({self.meeting_start_str})"
                 )
-            self.search_box.clear()
-            self.search_results.clear()
+                self.participant_times[name] = self.elapsed_ms  # Record join time
 
     def remove_participant(self):
         selected_items = self.participants_list.selectedItems()
         if not selected_items:
+            print("DEBUG: No participant selected for removal.")
             return
         selected_name = selected_items[0].text()
         self.participants_list.takeItem(self.participants_list.row(selected_items[0]))
+
         self.cursor.execute("SELECT working_wage FROM Employees WHERE name = ?", (selected_name,))
         wage = self.cursor.fetchone()[0]
+        print(f"DEBUG: Removing {selected_name} with hourly wage ${wage}")
+
+        # Calculate cost incurred by this participant before removal
+        if self.timer.isActive() and selected_name in self.participant_times:
+            time_in_meeting_ms = self.elapsed_ms - self.participant_times[selected_name]
+            cost_incurred = wage * (time_in_meeting_ms / 3600000.0)  # Convert ms to hours
+            self.incurred_cost += cost_incurred
+            print(
+                f"DEBUG: {selected_name} was in meeting for {time_in_meeting_ms}ms, incurred cost: ${cost_incurred:.2f}")
+            del self.participant_times[selected_name]  # Remove from tracking
+
+        # Reduce total_hourly_rate for future cost calculation
         self.total_hourly_rate -= wage
+        print(
+            f"DEBUG: New total hourly rate: ${self.total_hourly_rate}, Incurred cost so far: ${self.incurred_cost:.2f}")
+
         print(f"EASTER EGG: {selected_name} has left the money-making party!")
         if self.timer.isActive():
             event_time = datetime.fromtimestamp((self.start_time + self.elapsed_ms) / 1000).strftime('%I:%M%p').lower()
@@ -263,8 +283,9 @@ class TimeIsMoney(QMainWindow):
             self.participant_events.append(
                 f"{selected_name} left @ {event_time}; {minutes_elapsed} minutes after the meeting start ({self.meeting_start_str})"
             )
-            cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
-            self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
+            total_cost = self.incurred_cost + (self.total_hourly_rate * (self.elapsed_ms / 3600000.0))
+            self.cost_label.setText(f"Meeting Cost: ${total_cost:.2f}")
+            print(f"DEBUG: Updated total cost after removal: ${total_cost:.2f}")
 
     def add_all_employees(self):
         employees = self.get_employees()
@@ -283,10 +304,11 @@ class TimeIsMoney(QMainWindow):
                     self.participant_events.append(
                         f"{name} joined @ {event_time}; {minutes_elapsed} minutes after the meeting start ({self.meeting_start_str})"
                     )
+                    self.participant_times[name] = self.elapsed_ms  # Record join time
 
         if self.timer.isActive():
-            cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
-            self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
+            total_cost = self.incurred_cost + (self.total_hourly_rate * (self.elapsed_ms / 3600000.0))
+            self.cost_label.setText(f"Meeting Cost: ${total_cost:.2f}")
 
     def submit_note(self):
         note_text = self.notes_input.toPlainText().strip()
@@ -324,6 +346,8 @@ class TimeIsMoney(QMainWindow):
             self.cost_label.setText("Meeting Cost: $0.00")
             self.participant_events = []
             self.meeting_notes = []
+            self.incurred_cost = 0.0
+            self.participant_times = {}
             print("EASTER EGG: Meeting initiated! Time to make some money, honey!")
 
     def end_meeting(self):
@@ -336,16 +360,21 @@ class TimeIsMoney(QMainWindow):
             self.start_button.setText("Meeting Start")
             duration_str = self.format_time(self.elapsed_ms)
             self.duration_label.setText(f"Meeting Duration: {duration_str}")
-            cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
-            self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
+            total_cost = self.incurred_cost + (self.total_hourly_rate * (self.elapsed_ms / 3600000.0))
+            self.cost_label.setText(f"Meeting Cost: ${total_cost:.2f}")
             print(f"EASTER EGG: Meeting over! Time banked: {duration_str}. Cash it in!")
-            self.save_meeting_data(self.participants_list, duration_str, cost)
+            self.save_meeting_data(self.participants_list, duration_str, total_cost)
 
     def save_meeting_data(self, participants, duration, cost):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir = os.path.join("G:\\expo\\Software\\TimeIsMoney\\TimeIsMoney", "session logs")
-        os.makedirs(log_dir, exist_ok=True)
-        filename = os.path.join(log_dir, f"meeting_log_{timestamp}.html")
+        html_dir = os.path.join(log_dir, "HTML")
+        xml_dir = os.path.join(log_dir, "XML")
+        os.makedirs(html_dir, exist_ok=True)
+        os.makedirs(xml_dir, exist_ok=True)
+
+        # HTML Export
+        html_filename = os.path.join(html_dir, f"meeting_log_{timestamp}.html")
         participants_list = [self.participants_list.item(i).text() for i in range(self.participants_list.count())]
 
         html_content = """
@@ -361,14 +390,14 @@ class TimeIsMoney(QMainWindow):
                 .swatch { display: inline-block; width: 15px; height: 15px; margin-right: 10px; vertical-align: middle; }
                 .join { background-color: red; }
                 .leave { background-color: green; }
-                .note { color: blue; } /* Blue notes */
+                .note { color: blue; }
             </style>
         </head>
         <body>
             <h1>Meeting Summary</h1>
             <div class="summary">
         """
-        html_content += f"Date: {datetime.now().strftime('%Y-%m-d %H:%M:%S')}<br>"
+        html_content += f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>"
         html_content += f"Participants (at end): {', '.join(participants_list)}<br>"
         html_content += f"Duration: {duration}<br>"
         html_content += f"Total Cost: ${cost:.2f}<br>"
@@ -398,25 +427,65 @@ class TimeIsMoney(QMainWindow):
         </html>
         """
 
-        with open(filename, "w") as f:
+        with open(html_filename, "w") as f:
             f.write(html_content)
-        print(f"EASTER EGG: Meeting data saved to {filename}! Notes in blue—pretty snazzy, huh?")
+
+        # XML Export
+        xml_filename = os.path.join(xml_dir, f"meeting_log_{timestamp}.xml")
+        root = ET.Element("MeetingLog")
+
+        summary = ET.SubElement(root, "Summary")
+        ET.SubElement(summary, "Date").text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        ET.SubElement(summary, "Participants").text = ','.join(participants_list)
+        ET.SubElement(summary, "Duration").text = duration
+        ET.SubElement(summary, "TotalCost").text = f"{cost:.2f}"
+
+        events = ET.SubElement(root, "ParticipantEvents")
+        if self.participant_events:
+            for event in self.participant_events:
+                event_elem = ET.SubElement(events, "Event")
+                if "joined" in event:
+                    event_elem.set("type", "join")
+                elif "left" in event:
+                    event_elem.set("type", "leave")
+                event_elem.text = event
+        else:
+            ET.SubElement(events, "Event").text = "No participant changes during the meeting."
+
+        notes = ET.SubElement(root, "MeetingNotes")
+        if self.meeting_notes:
+            for note in self.meeting_notes:
+                timestamp, note_text = note.split(": ", 1)
+                note_elem = ET.SubElement(notes, "Note")
+                note_elem.set("timestamp", timestamp)
+                note_elem.text = note_text
+        else:
+            ET.SubElement(notes, "Note").text = "No notes recorded during the meeting."
+
+        tree = ET.ElementTree(root)
+        ET.indent(tree, space="  ")
+        tree.write(xml_filename, encoding="utf-8", xml_declaration=True)
+
+        print(
+            f"EASTER EGG: Meeting data saved to {html_filename} (HTML) and {xml_filename} (XML)! Blue notes and metadata galore!")
 
     def reset_meeting(self):
         if self.timer.isActive():
             self.timer.stop()
         self.participants_list.clear()
         self.total_hourly_rate = 0.0
+        self.incurred_cost = 0.0
         self.elapsed_ms = 0
         self.participant_events = []
         self.meeting_notes = []
+        self.participant_times = {}
         self.notes_input.clear()
         self.timer_label.setText("Time Elapsed: 00:00:00:000")
         self.duration_label.setText("")
         self.cost_label.setText("Meeting Cost: $0.00")
         self.start_button.setText("Meeting Start")
         self.start_button.setEnabled(True)
-        self.start_button.setStyleSheet("background-color: black; color: white;")
+        self.start_button.setStyleSheet("background-color: blue; color: white;")
         self.end_button.setEnabled(False)
         self.end_button.setStyleSheet("background-color: grey; color: white;")
         print("EASTER EGG: Resetting the money clock—cha-ching!")
@@ -427,8 +496,8 @@ class TimeIsMoney(QMainWindow):
         self.elapsed_ms = current_time - self.start_time
         time_str = self.format_time(self.elapsed_ms)
         self.timer_label.setText(f"Time Elapsed: {time_str}")
-        cost = self.total_hourly_rate * (self.elapsed_ms / 3600000.0)
-        self.cost_label.setText(f"Meeting Cost: ${cost:.2f}")
+        total_cost = self.incurred_cost + (self.total_hourly_rate * (self.elapsed_ms / 3600000.0))
+        self.cost_label.setText(f"Meeting Cost: ${total_cost:.2f}")
         if self.elapsed_ms % 10000 < 10:
             print("EASTER EGG: Tick-tock! Time’s money, and you’re racking it up!")
 
